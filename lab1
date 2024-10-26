@@ -1,0 +1,109 @@
+import socket
+import ssl
+from bs4 import BeautifulSoup
+from functools import reduce
+import datetime
+
+# Exchange rate from GBP to MDL (example rate)
+gbp_to_mdl_rate = 22.0  # Replace with the current rate if available
+
+# TCP connection parameters
+host = 'books.toscrape.com'
+port = 443  # HTTPS uses port 443
+
+# Function to send HTTP GET request via TCP socket
+def fetch_page(url_path):
+    context = ssl.create_default_context()
+    sock = socket.create_connection((host, port))
+    conn = context.wrap_socket(sock, server_hostname=host)
+
+    # Send HTTP request
+    request = f"GET {url_path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n"
+    conn.sendall(request.encode())
+
+    response = b""
+    while True:
+        data = conn.recv(4096)
+        if not data:
+            break
+        response += data
+
+    conn.close()
+    response_text = response.decode('utf-8')
+    _, body = response_text.split("\r\n\r\n", 1)
+    return body
+
+# Fetch main page to get book data
+main_page = fetch_page('/catalogue/category/books/classics_6/index.html')
+soup = BeautifulSoup(main_page, 'html.parser')
+
+# Extract product data
+product_names = [name.get_text() for name in soup.find_all('h3')]
+product_prices = [
+    float(price.get_text().replace("£", "")) * gbp_to_mdl_rate for price in soup.find_all(class_='price_color')
+]
+product_links = [
+    link['href'].replace('../../../', '/catalogue/') for link in soup.find_all('a', href=True)
+][52:]  # Filter duplicates
+
+# Retrieve stock availability for each book page
+stock = []
+for url_path in product_links:
+    book_page = fetch_page(url_path)
+    book_soup = BeautifulSoup(book_page, 'html.parser')
+    product_availability = book_soup.find('p', class_='instock availability').get_text().strip()
+    stock.append(product_availability)
+
+# Prepare data for serialization
+data = {
+    "Product Name": product_names,
+    "Prices (MDL)": product_prices,
+    "URL": ["https://books.toscrape.com" + link for link in product_links],
+    "Stock": stock,
+    "Timestamp": datetime.datetime.utcnow().isoformat()
+}
+
+# JSON Serialization
+def serialize_to_json(data):
+    json_str = '{\n'
+    json_str += '  "Books": [\n'
+    for i in range(len(data["Product Name"])):
+        book_json = '    {\n'
+        book_json += f'      "Product Name": "{data["Product Name"][i]}",\n'
+        book_json += f'      "Prices (MDL)": {data["Prices (MDL)"][i]},\n'
+        book_json += f'      "URL": "{data["URL"][i]}",\n'
+        book_json += f'      "Stock": "{data["Stock"][i]}"\n'
+        book_json += '    }'
+        if i < len(data["Product Name"]) - 1:
+            book_json += ',\n'
+        else:
+            book_json += '\n'
+        json_str += book_json
+    json_str += '  ],\n'
+    json_str += f'  "Timestamp": "{data["Timestamp"]}"\n'
+    json_str += '}'
+    return json_str
+
+# XML Serialization
+def serialize_to_xml(data):
+    xml_str = '<Data>\n'
+    xml_str += '  <Books>\n'
+    for i in range(len(data["Product Name"])):
+        book_xml = '    <Book>\n'
+        book_xml += f'      <ProductName>{data["Product Name"][i]}</ProductName>\n'
+        book_xml += f'      <PricesMDL>{data["Prices (MDL)"][i]}</PricesMDL>\n'
+        book_xml += f'      <URL>{data["URL"][i]}</URL>\n'
+        book_xml += f'      <Stock>{data["Stock"][i]}</Stock>\n'
+        book_xml += '    </Book>\n'
+        xml_str += book_xml
+    xml_str += '  </Books>\n'
+    xml_str += f'  <Timestamp>{data["Timestamp"]}</Timestamp>\n'
+    xml_str += '</Data>'
+    return xml_str
+
+# Print the serialized outputs
+print("JSON Output:")
+print(serialize_to_json(data))
+
+print("\nXML Output:")
+print(serialize_to_xml(data))
